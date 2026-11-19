@@ -37,7 +37,7 @@ export const qs = (o: Record<string, string | number | boolean | undefined | nul
   new URLSearchParams(Object.entries(o).filter(([, v]) => v !== undefined && v !== null && v !== "").map(([k, v]) => [k, String(v)])).toString();
 
 // ------------------------------------------------------------------------- types
-export type SourceName = "openalex" | "arxiv" | "semantic_scholar" | "core";
+export type SourceName = "openalex" | "arxiv";
 
 export interface Health { status: string; db: string; ml: "ok" | "unavailable"; llm: string | null }
 

@@ -84,6 +84,7 @@ export async function searchOpenAlex(q: DiscoverQuery): Promise<DiscoveredPaper[
   if (q.openAccessOnly) filters.push("is_oa:true");
   const data = await getJson<{ results: Work[] }>(
     `${BASE}/works?${params({ search: q.q, "per-page": String(Math.min(q.limit, 50)), filter: filters.join(",") })}`,
+    { retries: 1, maxRetryWaitMs: 2000, timeoutMs: 8000 }, // someone is waiting on this: fail fast, never hang
   );
   return data.results.map(mapWork);
 }

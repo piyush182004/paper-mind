@@ -1,4 +1,4 @@
-export type SourceName = "openalex" | "arxiv" | "semantic_scholar" | "core";
+export type SourceName = "openalex" | "arxiv";
 
 /** A paper as returned by any discovery source, normalised to one shape. */
 export interface DiscoveredPaper {

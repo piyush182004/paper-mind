@@ -1,5 +1,7 @@
-import { useState } from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { Suspense, useState } from "react";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { ErrorBoundary } from "./ErrorBoundary";
+import { Spinner } from "./ui";
 import { useQuery } from "@tanstack/react-query";
 import { HelpCircle, BarChart3, BookOpen, Bot, Boxes, Compass, GitCompareArrows, Home, Lightbulb, Loader2, LogOut, Menu, Network, Search, X } from "lucide-react";
 import { api, type Health, type Job } from "../lib/api";
@@ -30,6 +32,7 @@ const NAV = [
 export function Layout() {
   const [open, setOpen] = useState(false);
   const { user, signOut } = useAuth();
+  const { pathname } = useLocation();
   const health = useQuery({ queryKey: ["health"], queryFn: () => api.get<Health>("/health"), refetchInterval: 30_000, retry: false });
   const jobs = useQuery({ queryKey: ["jobs"], queryFn: () => api.get<{ jobs: Job[] }>("/jobs"), refetchInterval: 4000 });
   const active = jobs.data?.jobs.filter((j) => j.status === "running" || j.status === "queued") ?? [];
@@ -101,7 +104,11 @@ export function Layout() {
         <ThemeToggle />
         </header>
         <main className="min-w-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8">
-          <div className="mx-auto max-w-[1400px]"><Outlet /></div>
+          <div className="mx-auto max-w-[1400px]">
+            <ErrorBoundary resetKey={pathname}>
+              <Suspense fallback={<div className="p-8"><Spinner /></div>}><Outlet /></Suspense>
+            </ErrorBoundary>
+          </div>
         </main>
       </div>
     </div>

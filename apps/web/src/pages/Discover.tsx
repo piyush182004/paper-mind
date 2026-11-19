@@ -5,7 +5,7 @@ import { api, qs, type DiscoveredPaper, type SourceName } from "../lib/api";
 import { Badge, Button, Card, Empty, ErrorBox, PageHeader, Spinner, inputCls } from "../components/ui";
 import { useOpenPaper } from "../components/PaperDrawer";
 
-const LABEL: Record<SourceName, string> = { openalex: "OpenAlex", arxiv: "arXiv", semantic_scholar: "Semantic Scholar", core: "CORE" };
+const LABEL: Record<SourceName, string> = { openalex: "OpenAlex", arxiv: "arXiv" };
 
 export default function Discover() {
   const [q, setQ] = useState("");
@@ -42,7 +42,7 @@ export default function Discover() {
     <>
       <PageHeader title="Find papers" icon={<Compass className="size-6" />}
         description="Search open research databases and add papers to your library. Papers someone already imported are added instantly."
-        details={<><p>Searches OpenAlex, arXiv, Semantic Scholar and CORE at the same time and merges duplicates (by DOI, arXiv id, then title).</p><p><b>Read full text</b> downloads the open-access PDF so answers can cite exact pages, tables and results. Turning it off imports only the title and abstract, which is much faster.</p></>} />
+        details={<><p>Searches OpenAlex (250M+ works) and arXiv at the same time and merges duplicates (by DOI, arXiv id, then title).</p><p><b>Read full text</b> downloads the open-access PDF so answers can cite exact pages, tables and results. Turning it off imports only the title and abstract, which is much faster.</p></>} />
 
       <Card className="mb-6">
         <form onSubmit={submit} className="space-y-4">
@@ -69,8 +69,8 @@ export default function Discover() {
       </Card>
 
       {results.data && Object.keys(results.data.errors).length > 0 && (
-        <div className="mb-4 space-y-1 text-xs text-warn-ink">
-          {Object.entries(results.data.errors).map(([s, err]) => <div key={s}>{LABEL[s as SourceName] ?? s}: {err}</div>)}
+        <div className="mb-4 space-y-1 rounded-xl border border-ink-700 bg-ink-850 px-4 py-2.5 text-sm text-ink-300">
+          {Object.entries(results.data.errors).map(([s, err]) => <div key={s}><b className="font-medium text-ink-100">{LABEL[s as SourceName] ?? s}</b> is {err}</div>)}
         </div>
       )}
       {results.error && <ErrorBox error={results.error} />}
@@ -82,7 +82,7 @@ export default function Discover() {
       )}
 
       {results.isFetching ? <Spinner label="Searching sources…" /> : params == null ? (
-        <Empty icon={<Compass className="size-8" />} title="Search OpenAlex, arXiv, Semantic Scholar and CORE">Pick papers to import; open-access PDFs are parsed for page-level citations.</Empty>
+        <Empty icon={<Compass className="size-8" />} title="Search OpenAlex and arXiv">Pick papers to import; open-access PDFs are parsed for page-level citations.</Empty>
       ) : list.length === 0 ? <Empty title="No results">Try broader terms or more sources.</Empty> : (
         <>
           <div className="sticky top-14 z-10 -mx-1 mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-ink-950/90 px-1 py-2 backdrop-blur">

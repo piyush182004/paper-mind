@@ -10,10 +10,12 @@ const UA = "PaperMind/0.1 (research-intelligence; +https://github.com)";
 export interface FetchOpts extends RequestInit {
   timeoutMs?: number;
   retries?: number;
+  /** give up instead of retrying when the server asks us to wait longer than this (interactive calls) */
+  maxRetryWaitMs?: number;
 }
 
 export async function fetchWithRetry(url: string, opts: FetchOpts = {}): Promise<Response> {
-  const { timeoutMs = 20_000, retries = 2, ...init } = opts;
+  const { timeoutMs = 20_000, retries = 2, maxRetryWaitMs = 10_000, ...init } = opts;
   let lastErr: unknown;
   for (let attempt = 0; attempt <= retries; attempt++) {
     const ctrl = new AbortController();
@@ -22,7 +24,9 @@ export async function fetchWithRetry(url: string, opts: FetchOpts = {}): Promise
       const res = await fetch(url, { ...init, signal: ctrl.signal, headers: { "User-Agent": UA, ...(init.headers ?? {}) } });
       if ((res.status === 429 || res.status >= 500) && attempt < retries) {
         const ra = Number(res.headers.get("retry-after"));
-        await sleep(Number.isFinite(ra) && ra > 0 ? Math.min(ra, 10) * 1000 : 600 * 2 ** attempt);
+        const wait = Number.isFinite(ra) && ra > 0 ? ra * 1000 : 600 * 2 ** attempt;
+        if (wait > maxRetryWaitMs) return res; // caller reports "busy" instead of freezing the page
+        await sleep(wait);
         continue;
       }
       return res;

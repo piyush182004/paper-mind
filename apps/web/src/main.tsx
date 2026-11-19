@@ -55,7 +55,7 @@ function App() {
   if (!user) return <Welcome />;
   return (
     <PaperDrawerProvider>
-      <Suspense fallback={<div className="p-8"><Spinner /></div>}>
+      <Suspense fallback={<div className="p-8"><Spinner /></div>}>{/* pages suspend inside Layout; this only covers the shell */}
         <Routes>
           <Route element={<Layout />}>
             <Route index element={<Dashboard />} />

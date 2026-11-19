@@ -13,7 +13,7 @@ React + TS + Tailwind (apps/web) ──► Node.js / Fastify API (apps/api) ─�
 
 | Capability | How it works |
 |---|---|
-| Discovery | OpenAlex, arXiv, Semantic Scholar, CORE (free); merged and de-duplicated (DOI → arXiv id → title) |
+| Discovery | OpenAlex and arXiv (free, no keys needed); merged and de-duplicated (DOI → arXiv id → title) |
 | Ingestion | PDF → page-level blocks (text, sections, tables, figures, equations) → hierarchical chunks → BGE embeddings |
 | Hybrid RAG | exact Okapi BM25 in SQL (inverted index table) + pgvector HNSW + paper-level coarse retrieval → RRF → cross-encoder rerank → small-to-big context → GraphRAG expansion |
 | Clustering | UMAP → HDBSCAN or K-Means (k by silhouette) → c-TF-IDF topic names → agglomerative parent themes; outliers kept |
@@ -63,7 +63,7 @@ Copy `.env.example` to `apps/api/.env`. All keys are optional:
 
 - `OPENROUTER_API_KEY` enables generated answers (default model `particle-ai/particle-1:free`).
 - `DATABASE_URL` switches from embedded Postgres to a server (e.g. a free Neon database with pgvector).
-- `OPENALEX_API_KEY`, `SEMANTIC_SCHOLAR_API_KEY`, `CORE_API_KEY` raise source limits (CORE needs one).
+- `OPENALEX_API_KEY` (optional) raises OpenAlex rate limits.
 - `ML_SERVICE_TOKEN` is a shared secret between API and ML service (required in production).
 
 ## Deploy

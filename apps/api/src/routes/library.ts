@@ -12,7 +12,7 @@ import type { DiscoveredPaper } from "../sources/types.js";
 import { findExisting, getPaper, upsertDiscovered } from "../repo/papers.js";
 import { uploadsDir } from "../ingest/pipeline.js";
 
-const SourceName = z.enum(["openalex", "arxiv", "semantic_scholar", "core"]);
+const SourceName = z.enum(["openalex", "arxiv"]);
 const Id = z.object({ id: z.coerce.number().int() });
 
 const DiscoveredSchema = z.object({
@@ -42,7 +42,11 @@ export const libraryRoutes: FastifyPluginAsync = async (app) => {
     const uid = userId(req);
     const q = z.object({
       q: z.string().trim().min(2).max(300),
-      sources: z.string().default("openalex,arxiv").transform((s) => s.split(",").map((x) => SourceName.parse(x.trim()))),
+      sources: z.string().default("openalex,arxiv").transform((s) => {
+        // unknown or retired source names are ignored rather than failing the search
+        const list = s.split(",").map((x) => SourceName.safeParse(x.trim())).flatMap((r) => (r.success ? [r.data] : []));
+        return list.length ? list : SourceName.options;
+      }),
       limit: z.coerce.number().int().min(1).max(50).default(15),
       yearFrom: z.coerce.number().int().min(1900).max(2100).optional(),
       yearTo: z.coerce.number().int().min(1900).max(2100).optional(),

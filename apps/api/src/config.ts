@@ -39,8 +39,6 @@ const Env = z.object({
   // --- discovery sources (all free; keys only raise limits) -----------------------------
   OPENALEX_MAILTO: z.string().optional(), // joins OpenAlex's faster "polite pool"
   OPENALEX_API_KEY: z.string().optional(), // free key: avoids anonymous search throttling under load
-  SEMANTIC_SCHOLAR_API_KEY: z.string().optional(),
-  CORE_API_KEY: z.string().optional(), // CORE requires a free key; source disabled without it
 
   // --- Sign in with Google (optional; create an OAuth client in Google Cloud Console) -----
   // Authorised redirect URI to register: <PUBLIC_URL>/api/auth/google/callback

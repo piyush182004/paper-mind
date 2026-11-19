@@ -8,7 +8,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 
 const STEPS = [
-  { icon: Compass, title: "1. Add papers", text: "Search millions of open papers (arXiv, OpenAlex, Semantic Scholar) and import them in one click, or upload your own PDFs." },
+  { icon: Compass, title: "1. Add papers", text: "Search millions of open papers (OpenAlex and arXiv) and import them in one click, or upload your own PDFs." },
   { icon: Sparkles, title: "2. PaperMind reads them", text: "Every paper is read page by page. Methods, datasets, findings and limitations are pulled out and linked to the exact page." },
   { icon: Bot, title: "3. Ask and explore", text: "Ask questions and get answers with citations. See your papers grouped into topics and connected in a map." },
 ];

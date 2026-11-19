@@ -1,9 +1,11 @@
 /** arXiv Atom API (free, no key). arXiv asks clients to wait ≥3 s between requests: we throttle. */
 import { XMLParser } from "fast-xml-parser";
-import { fetchWithRetry, throttle } from "../lib/http.js";
+import { HttpError, fetchWithRetry, throttle } from "../lib/http.js";
 import { cleanDoi, type DiscoverQuery, type DiscoveredPaper } from "./types.js";
 
 const queue = throttle(3100);
+/** interactive searches get their own lane so they never wait behind background PDF downloads */
+const searchQueue = throttle(3100);
 const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_", isArray: (n) => ["entry", "author", "link", "category"].includes(n) });
 
 interface Entry {
@@ -53,9 +55,9 @@ export async function searchArxiv(q: DiscoverQuery): Promise<DiscoveredPaper[]> 
   if (!terms.length) return [];
   const search = terms.map((t) => `all:${t}`).join("+AND+");
   const url = `https://export.arxiv.org/api/query?search_query=${search}&start=0&max_results=${Math.min(q.limit, 50)}&sortBy=relevance`;
-  const xml = await queue(async () => {
-    const res = await fetchWithRetry(url, { timeoutMs: 25_000 });
-    if (!res.ok) throw new Error(`arXiv responded ${res.status}`);
+  const xml = await searchQueue(async () => {
+    const res = await fetchWithRetry(url, { timeoutMs: 12_000, retries: 1, maxRetryWaitMs: 2000 });
+    if (!res.ok) throw new HttpError(`arXiv responded ${res.status}`, res.status, url);
     return res.text();
   });
   const feed = parser.parse(xml)?.feed;

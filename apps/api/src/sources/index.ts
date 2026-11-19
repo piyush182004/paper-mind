@@ -1,23 +1,18 @@
 /** Fan-out discovery across sources, merged and de-duplicated (DOI > arXiv id > normalised title). */
+import { HttpError } from "../lib/http.js";
 import { normKey } from "../lib/text.js";
 import { searchArxiv } from "./arxiv.js";
-import { coreEnabled, searchCore } from "./core.js";
 import { searchOpenAlex } from "./openalex.js";
-import { searchSemanticScholar } from "./semanticScholar.js";
 import type { DiscoverQuery, DiscoveredPaper, SourceName } from "./types.js";
 
 const SEARCHERS: Record<SourceName, (q: DiscoverQuery) => Promise<DiscoveredPaper[]>> = {
   openalex: searchOpenAlex,
   arxiv: searchArxiv,
-  semantic_scholar: searchSemanticScholar,
-  core: searchCore,
 };
 
 export const availableSources = (): { name: SourceName; enabled: boolean; note?: string }[] => [
   { name: "openalex", enabled: true },
   { name: "arxiv", enabled: true },
-  { name: "semantic_scholar", enabled: true, note: "shared rate limit without a key" },
-  { name: "core", enabled: coreEnabled(), note: coreEnabled() ? undefined : "set CORE_API_KEY (free) to enable" },
 ];
 
 export function dedupeKey(p: Pick<DiscoveredPaper, "doi" | "arxivId" | "title">): string {
@@ -45,15 +40,39 @@ function merge(a: DiscoveredPaper, b: DiscoveredPaper): DiscoveredPaper {
   };
 }
 
-export async function discover(q: DiscoverQuery): Promise<{ results: (DiscoveredPaper & { foundIn: SourceName[] })[]; errors: Record<string, string> }> {
-  const enabled = q.sources.filter((s) => s !== "core" || coreEnabled());
+/** Plain-language reason a source could not answer (shown to the user next to the other results). */
+function friendly(e: unknown): string {
+  if (e instanceof HttpError && e.status === 429) return "busy right now, so these results come from the other source. Try again in a minute for more.";
+  if (e instanceof Error && (e.name === "AbortError" || /abort|timeout/i.test(e.message))) return "did not respond in time; showing results from the other source.";
+  return "could not be reached right now; showing results from the other source.";
+}
+
+type DiscoverResult = { results: (DiscoveredPaper & { foundIn: SourceName[] })[]; errors: Record<string, string> };
+const cache = new Map<string, { at: number; value: DiscoverResult }>();
+const CACHE_MS = 15 * 60_000;
+
+/** Same search again (paging back, re-importing) is instant; only complete answers are cached. */
+export async function discover(q: DiscoverQuery): Promise<DiscoverResult> {
+  const key = JSON.stringify([q.q.toLowerCase(), [...q.sources].sort(), q.limit, q.yearFrom, q.yearTo, q.openAccessOnly]);
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.at < CACHE_MS) return hit.value;
+  const value = await discoverUncached(q);
+  if (!Object.keys(value.errors).length) {
+    cache.set(key, { at: Date.now(), value });
+    if (cache.size > 300) cache.delete(cache.keys().next().value!);
+  }
+  return value;
+}
+
+async function discoverUncached(q: DiscoverQuery): Promise<DiscoverResult> {
+  const enabled = [...new Set(q.sources)].filter((s) => s in SEARCHERS);
   const settled = await Promise.allSettled(enabled.map((s) => SEARCHERS[s](q)));
   const errors: Record<string, string> = {};
   const merged = new Map<string, DiscoveredPaper & { foundIn: SourceName[] }>();
   settled.forEach((r, i) => {
     const src = enabled[i];
     if (r.status === "rejected") {
-      errors[src] = r.reason instanceof Error ? r.reason.message : String(r.reason);
+      errors[src] = friendly(r.reason);
       return;
     }
     for (const p of r.value) {

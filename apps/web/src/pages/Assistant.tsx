@@ -37,7 +37,12 @@ export default function Assistant() {
     }),
     onSuccess: (res, q) => { setTurns((t) => [...t, { role: "user", content: q || MODES.find((m) => m.id === mode)!.label }, { role: "assistant", content: res.answer, response: res }]); setInput(""); usage.refetch(); },
   });
-  useEffect(() => endRef.current?.scrollIntoView({ behavior: "smooth" }), [turns, ask.isPending]);
+  // scroll only the chat box (not the whole page); braces matter: scrollIntoView returns a Promise in new browsers,
+  // and an effect must never return anything but a cleanup function
+  useEffect(() => {
+    const box = endRef.current?.parentElement;
+    if (box) box.scrollTo({ top: box.scrollHeight, behavior: "smooth" });
+  }, [turns, ask.isPending]);
 
   const m = MODES.find((x) => x.id === mode)!;
   const canSend = (m.needs === "question" ? input.trim().length > 2 : m.needs === "paper" ? paperIds.length === 1 : m.needs === "papers" ? paperIds.length >= 2 : paperIds.length > 0 || clusterId !== "") && !ask.isPending;
