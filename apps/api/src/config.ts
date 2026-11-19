@@ -21,7 +21,8 @@ const Env = z.object({
   PORT: z.coerce.number().int().default(8080),
   LOG_LEVEL: z.string().default("info"),
   CORS_ORIGINS: z.string().default("http://localhost:5173,http://127.0.0.1:5173"),
-  PUBLIC_URL: z.string().default("http://localhost:8080"),
+  // Render sets RENDER_EXTERNAL_URL automatically
+  PUBLIC_URL: z.string().default(process.env.RENDER_EXTERNAL_URL ?? "http://localhost:8080"),
 
   // --- storage ------------------------------------------------------------------------
   /** postgres://… (e.g. Neon). Empty = embedded Postgres (PGlite) on local disk. */
@@ -29,6 +30,10 @@ const Env = z.object({
   DATA_DIR: z.string().default("./data"),
 
   // --- Python ML microservice (embeddings, reranking, PDF parsing, clustering) ------------
+  // embedded: embeddings, PDF parsing and topics run inside this Node process (fits a 512 MB free instance).
+  // service: call the Python ML service (adds HDBSCAN, cross-encoder reranking, table extraction).
+  ML_MODE: z.enum(["embedded", "service"]).default("embedded"),
+  MODELS_DIR: z.string().default("./models"),
   ML_SERVICE_URL: z.string().default("http://127.0.0.1:8001"),
   /** Shared secret sent as X-Internal-Token; set the same value on the ML service in production. */
   ML_SERVICE_TOKEN: z.string().optional(),

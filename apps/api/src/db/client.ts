@@ -92,8 +92,23 @@ async function openPglite(dir = path.resolve(config.DATA_DIR, "pglite")): Promis
 async function openPostgres(url: string): Promise<Db> {
   const pgMod = await import("pg");
   const Pool = pgMod.default.Pool;
+  // node-postgres returns BIGINT (ids, count(), sum()) and NUMERIC (avg()) as strings; PGlite returns numbers.
+  // Parse both to numbers so both drivers behave the same (ids stay far below 2^53).
+  pgMod.default.types.setTypeParser(20, (v: string) => Number(v));
+  pgMod.default.types.setTypeParser(1700, (v: string) => Number(v));
   const needsSsl = /sslmode=require|neon\.tech/.test(url);
-  const pool = new Pool({ connectionString: url, max: 10, ssl: needsSsl ? { rejectUnauthorized: false } : undefined });
+  // keepAlive + a short idle timeout: serverless Postgres (Neon) drops idle connections when it scales to zero
+  const pool = new Pool({ connectionString: url, max: 10, idleTimeoutMillis: 30_000, keepAlive: true,
+    ssl: needsSsl ? { rejectUnauthorized: false } : undefined });
+  // a dropped idle connection must never crash the server: the pool replaces it on the next query
+  pool.on("error", (e) => console.warn(`[db] idle connection closed by server: ${e.message}`));
+
+  /** Connection-level failures (not SQL errors) are safe to retry once outside a transaction. */
+  const dropped = (e: unknown) => {
+    const err = e as { code?: string; message?: string };
+    return ["ECONNRESET", "EPIPE", "ETIMEDOUT", "57P01", "57P02", "57P03"].includes(err.code ?? "") || String(err.code ?? "").startsWith("08")
+      || /Connection terminated|connection.*closed/i.test(err.message ?? "");
+  };
 
   const make = (q: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> }): Db => ({
     kind: "postgres",
@@ -102,6 +117,13 @@ async function openPostgres(url: string): Promise<Db> {
         const r = await q.query(sql, params);
         return { rows: r.rows as T[] };
       } catch (e) {
+        if (q === pool && dropped(e)) {
+          try {
+            return { rows: (await pool.query(sql, params)).rows as T[] };
+          } catch (e2) {
+            throw clean(e2, sql);
+          }
+        }
         throw clean(e, sql);
       }
     },
@@ -109,25 +131,47 @@ async function openPostgres(url: string): Promise<Db> {
       try {
         await q.query(sql);
       } catch (e) {
+        if (q === pool && dropped(e)) {
+          try {
+            await pool.query(sql);
+            return;
+          } catch (e2) {
+            throw clean(e2, sql);
+          }
+        }
         throw clean(e, sql);
       }
     },
     async tx<T>(fn: (db: Db) => Promise<T>) {
       const client = await pool.connect();
+      let broken: Error | undefined;
       try {
         await client.query("BEGIN");
         const out = await fn(make(client));
         await client.query("COMMIT");
         return out;
       } catch (e) {
-        await client.query("ROLLBACK");
+        // if the connection itself died, ROLLBACK fails too: discard that connection instead of reusing it
+        await client.query("ROLLBACK").catch((re: Error) => { broken = re; });
         throw e;
       } finally {
-        client.release();
+        client.release(broken);
       }
     },
     close: () => pool.end(),
   });
+
+  // serverless Postgres may be asleep: wait for it to wake (up to ~1 min) instead of failing the boot
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await pool.query("SELECT 1");
+      break;
+    } catch (e) {
+      if (attempt >= 6) throw clean(e, "SELECT 1");
+      console.warn(`[db] database not reachable yet (${(e as Error).message}); retrying (${attempt}/5)`);
+      await new Promise((r) => setTimeout(r, 2000 * attempt));
+    }
+  }
   return make(pool);
 }
 

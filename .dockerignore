@@ -1,0 +1,16 @@
+**/node_modules
+**/dist
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.env
+**/*.local
+apps/api/data
+apps/api/data-*
+apps/api/.scratch
+apps/api/test
+services/ml/data
+services/ml/tests
+_archive
+.git
+apps/api/models

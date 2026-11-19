@@ -33,7 +33,7 @@ export const libraryRoutes: FastifyPluginAsync = async (app) => {
   app.get("/health", async () => {
     const mlStatus = await ml.health().then(() => "ok").catch(() => "unavailable");
     await db.query("SELECT 1");
-    return { status: "ok", db: db.kind, ml: mlStatus, llm: llmEnabled() ? config.OPENROUTER_MODEL : null };
+    return { status: "ok", db: db.kind, ml: mlStatus, llm: llmEnabled() ? config.OPENROUTER_MODEL : null, reranker: ml.canRerank && config.ENABLE_RERANKER };
   });
 
   app.get("/sources", async () => ({ sources: availableSources() }));

@@ -1,7 +1,7 @@
 import { type FormEvent, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ChevronDown, Network, Search as SearchIcon } from "lucide-react";
-import { api, type ClusterState, type Hit, type SearchResult } from "../lib/api";
+import { api, type ClusterState, type Health, type Hit, type SearchResult } from "../lib/api";
 import { Badge, Button, Card, Empty, ErrorBox, PageHeader, ScoreBar, Spinner, inputCls } from "../components/ui";
 import { useOpenPaper } from "../components/PaperDrawer";
 
@@ -44,8 +44,8 @@ function HitCard({ h, query, rank }: { h: Hit; query: string; rank: number }) {
         </div>
       )}
       <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4">
-        <ScoreBar label="Final" value={s.final} hint="0.7 × cross-encoder + 0.3 × fused rank" />
-        <ScoreBar label="Cross-encoder" value={s.rerank} color="var(--color-s3)" />
+        <ScoreBar label="Final" value={s.final} hint={s.rerank != null ? "0.7 × cross-encoder + 0.3 × fused rank" : "fused rank"} />
+        {s.rerank != null && <ScoreBar label="Cross-encoder" value={s.rerank} color="var(--color-s3)" />}
         <ScoreBar label="RRF (fused)" value={s.rrf} color="var(--color-s1)" />
         <div className="text-[11px] text-ink-300">
           <div>BM25 rank: <span className="tabular-nums text-ink-200">{s.bm25Rank ?? "—"}</span></div>
@@ -69,6 +69,8 @@ export default function SearchPage() {
   const [clusterId, setClusterId] = useState("");
   const [opts, setOpts] = useState({ rerank: true, hierarchical: true, graph: true });
   const clusters = useQuery({ queryKey: ["clusters"], queryFn: () => api.get<ClusterState>("/clusters") });
+  const health = useQuery({ queryKey: ["health"], queryFn: () => api.get<Health>("/health"), staleTime: 60_000 });
+  const canRerank = health.data?.reranker === true;
   const search = useMutation({
     mutationFn: (q: string) => api.post<SearchResult>("/search", {
       query: q,
@@ -83,7 +85,7 @@ export default function SearchPage() {
     <>
       <PageHeader title="Search papers" icon={<SearchIcon className="size-6" />}
         description="Find the exact passages that answer your question, with the paper and page they come from."
-        details={<><p>Two searches run together: keyword matching (BM25) and meaning-based matching (vector embeddings). Results are merged (reciprocal rank fusion), the best papers are searched more closely, and an AI reranker double-checks the order.</p><p><b>Include connected papers</b> adds passages from papers that share methods, datasets or citations with the top results (GraphRAG). Each result shows the scores behind its rank.</p></>} />
+        details={<><p>Two searches run together: keyword matching (BM25) and meaning-based matching (vector embeddings). Results are merged (reciprocal rank fusion) and the best papers are searched more closely.</p><p><b>Include connected papers</b> adds passages from papers that share methods, datasets or citations with the top results (GraphRAG). Each result shows the scores behind its rank.</p></>} />
       <Card className="mb-6">
         <form onSubmit={submit} className="space-y-4">
           <div className="flex flex-col gap-3 sm:flex-row">
@@ -104,7 +106,7 @@ export default function SearchPage() {
             </select>
           </div>
           <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm text-ink-200">
-            {([["rerank", "Double-check ranking with AI"], ["hierarchical", "Look inside the best papers first"], ["graph", "Include connected papers"]] as const).map(([k, label]) => (
+            {([["rerank", "Double-check ranking with AI"], ["hierarchical", "Look inside the best papers first"], ["graph", "Include connected papers"]] as const).filter(([k]) => k !== "rerank" || canRerank).map(([k, label]) => (
               <label key={k} className="flex items-center gap-1.5"><input type="checkbox" className="accent-brand-500" checked={opts[k]} onChange={(e) => setOpts((o) => ({ ...o, [k]: e.target.checked }))} /> {label}</label>
             ))}
           </div>
@@ -119,7 +121,7 @@ export default function SearchPage() {
           <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-ink-400">
             <span>{r.hits.length} results</span>
             {Object.entries(r.timings).map(([k, v]) => <Badge key={k}>{k} {v} ms</Badge>)}
-            {r.degraded.length > 0 && <Badge tone="warn">degraded: {r.degraded.join(", ")} (ML service offline)</Badge>}
+            {r.degraded.length > 0 && <Badge tone="warn">degraded: {r.degraded.join(", ")} (search model unavailable)</Badge>}
           </div>
           {r.hits.length ? <ul className="space-y-3">{r.hits.map((h, i) => <HitCard key={`${h.chunkId}-${h.via}`} h={h} query={r.query} rank={i + 1} />)}</ul>
             : <Empty title="No matching passages">Try different wording or remove filters.</Empty>}

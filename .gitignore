@@ -10,3 +10,5 @@ services/ml/data/
 __pycache__/
 .pytest_cache/
 _archive/
+
+/apps/api/models/

@@ -75,7 +75,7 @@ export default function Clusters() {
     <>
       <PageHeader title="Topics" icon={<Boxes className="size-6" />}
         description="Your papers grouped into research themes automatically. Each dot is a paper: dots close together are about similar things."
-        details={<><p>Paper meanings are turned into vectors, reduced with UMAP and grouped with HDBSCAN (or K-Means). Each topic is named from the words most distinctive for it (class-based TF-IDF), and related topics are grouped into broader themes.</p><p>Coherence shows how tightly a topic's papers agree. Papers that fit no topic are shown as outliers instead of being forced in. Topics update automatically when you add papers.</p></>}
+        details={<><p>Paper meanings are turned into vectors, reduced with UMAP and grouped into topics (the number of topics is picked automatically by how cleanly papers separate, or you can fix it). Each topic is named from the words most distinctive for it (class-based TF-IDF), and related topics are grouped into broader themes.</p><p>Coherence shows how tightly a topic's papers agree. Papers that fit no topic are shown as outliers instead of being forced in. Topics update automatically when you add papers.</p></>}
         actions={<>
           <select value={algorithm} onChange={(e) => setAlgorithm(e.target.value as "hdbscan" | "kmeans")} className={`${inputCls} w-36`} aria-label="Algorithm">
             <option value="hdbscan">Automatic</option><option value="kmeans">Fixed number</option>

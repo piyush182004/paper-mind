@@ -39,7 +39,7 @@ export const qs = (o: Record<string, string | number | boolean | undefined | nul
 // ------------------------------------------------------------------------- types
 export type SourceName = "openalex" | "arxiv";
 
-export interface Health { status: string; db: string; ml: "ok" | "unavailable"; llm: string | null }
+export interface Health { status: string; db: string; ml: "ok" | "unavailable"; llm: string | null; reranker?: boolean }
 
 export interface DiscoveredPaper {
   source: SourceName; sourceId: string; title: string; abstract: string | null; year: number | null; publishedOn: string | null;

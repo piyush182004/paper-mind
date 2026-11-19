@@ -1,0 +1,20 @@
+# One-click deploy on Render's free plan (no card): Dashboard > New > Blueprint > pick this repo.
+# Everything runs in one Node service (ML_MODE=embedded); data lives in your Neon Postgres.
+services:
+  - type: web
+    name: papermind
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm ci --include=dev && npm run build && cd apps/api && node dist/ml/embedded/warm.js
+    startCommand: cd apps/api && NODE_ENV=production node dist/index.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: ML_MODE
+        value: embedded
+      - key: DATABASE_URL
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false

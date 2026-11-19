@@ -287,7 +287,7 @@ export async function hybridSearch(db: Db, query: string, filters: SearchFilters
       });
     });
 
-  if (opts.rerank !== false && config.ENABLE_RERANKER && qvec && hits.length) {
+  if (opts.rerank !== false && config.ENABLE_RERANKER && ml.canRerank && qvec && hits.length) {
     try {
       // cross-encoder cost grows with candidates x length: rerank a bounded head with trimmed passages
       const head = hits.slice(0, Math.max(15, k * 2));

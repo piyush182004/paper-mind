@@ -1,4 +1,5 @@
-# One command: docker compose up --build  ->  http://localhost:8080
+# Two containers: docker compose up --build  ->  http://localhost:8080
+# (or one container: docker build -t papermind . && docker run -p 8080:8080 papermind)
 services:
   ml:
     build: ./services/ml
@@ -7,10 +8,11 @@ services:
       ENVIRONMENT: production
     volumes: [ml-models:/app/data]
   api:
-    build: .
+    build: { context: ., dockerfile: apps/api/Dockerfile }
     ports: ["8080:8080"]
     depends_on: [ml]
     environment:
+      ML_MODE: service
       ML_SERVICE_URL: http://ml:8001
       ML_SERVICE_TOKEN: ${ML_SERVICE_TOKEN:-change-me}
       DATABASE_URL: ${DATABASE_URL:-}

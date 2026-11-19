@@ -1,5 +1,11 @@
-/** Client for the internal Python ML service (embeddings, reranking, PDF parsing, clustering). */
+/**
+ * ML operations: embeddings, PDF parsing, clustering (and reranking with the Python service).
+ * ML_MODE=embedded runs them in-process; ML_MODE=service calls services/ml.
+ */
 import { config } from "../config.js";
+
+const embedded = config.ML_MODE === "embedded";
+const local = () => Promise.all([import("./embedded/embed.js"), import("./embedded/pdf.js"), import("./embedded/cluster.js")]);
 
 export class MlUnavailableError extends Error {
   readonly status = 503;
@@ -65,9 +71,22 @@ async function call<T>(path: string, init: RequestInit & { timeoutMs?: number } 
 const json = (body: unknown) => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
 export const ml = {
-  health: () => call<{ status: string; embed_model: string }>("/health", { timeoutMs: 3000 }),
+  /** in-process models can't rerank (that needs the Python service's cross-encoder) */
+  canRerank: !embedded,
+
+  health: (): Promise<{ status: string; embed_model: string }> =>
+    embedded ? Promise.resolve({ status: "ok", embed_model: "bge-small-en-v1.5 (in-process)" })
+      : call<{ status: string; embed_model: string }>("/health", { timeoutMs: 3000 }),
 
   async embed(texts: string[], isQuery = false): Promise<number[][]> {
+    if (embedded) {
+      const [{ embed }] = await local();
+      try {
+        return await embed(texts, isQuery);
+      } catch (e) {
+        throw new MlUnavailableError(`Embedding model failed to load: ${(e as Error).message}`);
+      }
+    }
     const out: number[][] = [];
     for (let i = 0; i < texts.length; i += 64) {
       const r = await call<{ embeddings: number[][] }>("/embed", json({ texts: texts.slice(i, i + 64), is_query: isQuery }));
@@ -83,9 +102,25 @@ export const ml = {
   rerank: (query: string, documents: string[]) =>
     call<{ scores: number[] }>("/rerank", json({ query, documents })).then((r) => r.scores),
 
-  parsePdf: (pdf: Uint8Array) =>
-    call<ParsedPdf>("/parse-pdf", { method: "POST", headers: { "Content-Type": "application/pdf" }, body: pdf }),
+  async parsePdf(pdf: Uint8Array): Promise<ParsedPdf> {
+    if (embedded) {
+      const [, { parsePdf }] = await local();
+      try {
+        return await parsePdf(pdf);
+      } catch (e) {
+        const err = new Error(`Could not read this PDF: ${(e as Error).message}`) as Error & { status: number };
+        err.status = 422;
+        throw err;
+      }
+    }
+    return call<ParsedPdf>("/parse-pdf", { method: "POST", headers: { "Content-Type": "application/pdf" }, body: pdf });
+  },
 
-  cluster: (embeddings: number[][], docs: string[], algorithm: "hdbscan" | "kmeans", opts: { minClusterSize?: number; k?: number } = {}) =>
-    call<ClusterOut>("/cluster", json({ embeddings, docs, algorithm, min_cluster_size: opts.minClusterSize, k: opts.k })),
+  async cluster(embeddings: number[][], docs: string[], algorithm: "hdbscan" | "kmeans", opts: { minClusterSize?: number; k?: number } = {}): Promise<ClusterOut> {
+    if (embedded) {
+      const [, , { cluster }] = await local();
+      return cluster(embeddings, docs, algorithm, { k: opts.k });
+    }
+    return call<ClusterOut>("/cluster", json({ embeddings, docs, algorithm, min_cluster_size: opts.minClusterSize, k: opts.k }));
+  },
 };
