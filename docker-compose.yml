@@ -1,0 +1,23 @@
+# One command: docker compose up --build  ->  http://localhost:8080
+services:
+  ml:
+    build: ./services/ml
+    environment:
+      ML_SERVICE_TOKEN: ${ML_SERVICE_TOKEN:-change-me}
+      ENVIRONMENT: production
+    volumes: [ml-models:/app/data]
+  api:
+    build: .
+    ports: ["8080:8080"]
+    depends_on: [ml]
+    environment:
+      ML_SERVICE_URL: http://ml:8001
+      ML_SERVICE_TOKEN: ${ML_SERVICE_TOKEN:-change-me}
+      DATABASE_URL: ${DATABASE_URL:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-particle-ai/particle-1:free}
+      NODE_ENV: production
+    volumes: [api-data:/app/apps/api/data]
+volumes:
+  ml-models:
+  api-data:

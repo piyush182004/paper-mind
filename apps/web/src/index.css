@@ -1,0 +1,97 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+
+  --color-ink-950: #07090f;
+  --color-ink-900: #0b0e17;
+  --color-ink-850: #0f131e;
+  --color-ink-800: #141927;
+  --color-ink-700: #1c2232;
+  --color-ink-600: #283044;
+  --color-ink-500: #3a4359;
+  --color-ink-400: #6b7489;
+  --color-ink-300: #9aa3b6;
+  --color-ink-200: #c6ccd8;
+  --color-ink-100: #e8ebf2;
+
+  --color-brand-200: #cdc7f8;
+  --color-brand-300: #b3abf5;
+  --color-brand-400: #9085e9;
+  --color-brand-500: #7a6cef;
+  --color-brand-600: #6250d6;
+
+  /* categorical series, dark-surface steps (validated palette; fixed order, never cycled) */
+  --color-s1: #3987e5;
+  --color-s2: #d95926;
+  --color-s3: #199e70;
+  --color-s4: #c98500;
+  --color-s5: #d55181;
+  --color-s6: #0ca30c;
+  --color-s7: #9085e9;
+  --color-s8: #e66767;
+
+  --color-good: #0ca30c;
+  --color-warn: #fab219;
+  --color-bad: #ec835a;
+
+  /* text-safe status inks (meet contrast on their surface) */
+  --color-good-ink: #5fd35f;
+  --color-warn-ink: #fab219;
+  --color-bad-ink: #f3b39a;
+  --color-info-ink: #8cb8f0;
+}
+
+/* ---------------------------------------------------------------- light theme
+   Selected, not inverted: every surface and ink is its own step; chart series use the light steps
+   of the validated palette. The html[data-theme] attribute is set before first paint (index.html). */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --color-ink-950: #f4f6fa;
+  --color-ink-900: #ffffff;
+  --color-ink-850: #ffffff;
+  --color-ink-800: #eef1f6;
+  --color-ink-700: #e1e5ed;
+  --color-ink-600: #cdd3de;
+  --color-ink-500: #a7afc0;
+  --color-ink-400: #667087;
+  --color-ink-300: #4a5367;
+  --color-ink-200: #2b3243;
+  --color-ink-100: #10141f;
+
+  --color-brand-200: #3a2bb8;
+  --color-brand-300: #4636d8;
+  --color-brand-400: #5b4cf0;
+  --color-brand-500: #6a5cf2;
+  --color-brand-600: #5b4cf0;
+
+  --color-s1: #2a78d6;
+  --color-s2: #eb6834;
+  --color-s3: #1baf7a;
+  --color-s4: #eda100;
+  --color-s5: #e87ba4;
+  --color-s6: #008300;
+  --color-s7: #6250d6;
+  --color-s8: #e34948;
+
+  --color-good-ink: #006300;
+  --color-warn-ink: #8a5a00;
+  --color-bad-ink: #b4461d;
+  --color-info-ink: #1c5cab;
+}
+:root[data-theme="dark"] { color-scheme: dark; }
+
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--color-ink-950);
+  color: var(--color-ink-100);
+  -webkit-font-smoothing: antialiased;
+}
+::selection { background: color-mix(in srgb, var(--color-brand-500) 45%, transparent); }
+* { scrollbar-width: thin; scrollbar-color: var(--color-ink-600) transparent; }
+:focus-visible { outline: 2px solid var(--color-brand-400); outline-offset: 2px; border-radius: 6px; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
