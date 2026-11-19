@@ -60,7 +60,8 @@ const Env = z.object({
   LLM_TIMEOUT_MS: z.coerce.number().int().default(60_000),
 
   // --- ingestion / abuse protection -------------------------------------------------------
-  INGEST_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(2),
+  // in-process ML on a small instance: one paper at a time keeps memory bounded
+  INGEST_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(process.env.ML_MODE === "service" ? 2 : 1),
   MAX_UPLOAD_MB: z.coerce.number().default(40),
   MAX_PDF_PAGES: z.coerce.number().int().default(60),
   RATE_LIMIT_PER_MIN: z.coerce.number().int().default(120),

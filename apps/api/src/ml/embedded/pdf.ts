@@ -34,7 +34,14 @@ function isEquation(t: string): boolean {
   return math / Math.max(1, t.length) > 0.12 && words.length <= 4;
 }
 
-interface Line { text: string; x: number; y: number; size: number }
+/** "3 Experiments", "4.2 Results", "Conclusion": short, no sentence punctuation. */
+const headingLike = (t: string) => {
+  const s = t.trim();
+  const w = s.split(/\s+/).length;
+  return w <= 8 && s.length < 80 && !/[.,;:]$/.test(s) && (NUMBERED.test(s) || (CANONICAL_HEADINGS.test(s) && w <= 4));
+};
+
+interface Line { text: string; x: number; y: number; size: number; font: string }
 interface Raw { page: number; text: string; size: number }
 
 const median = (xs: number[]) => {
@@ -56,15 +63,17 @@ export async function parsePdf(data: Uint8Array, maxPages = 60): Promise<ParsedP
       // items -> lines (pdf.js gives content-stream order, which follows columns in most papers)
       const lines: Line[] = [];
       let cur: Line | null = null;
-      for (const it of tc.items as { str: string; transform: number[]; hasEOL?: boolean }[]) {
+      for (const it of tc.items as { str: string; transform: number[]; hasEOL?: boolean; fontName?: string }[]) {
         if (typeof it.str !== "string") continue;
+        if (Math.abs(it.transform[1]) > Math.abs(it.transform[0])) continue; // rotated margin text (arXiv stamp, line numbers)
         const size = Math.hypot(it.transform[2], it.transform[3]) || 10;
         const x = it.transform[4], y = it.transform[5];
         if (cur && Math.abs(cur.y - y) > Math.max(2, size * 0.5)) {
           lines.push(cur);
           cur = null;
         }
-        if (!cur) cur = { text: "", x, y, size };
+        if (!cur) cur = { text: "", x, y, size, font: it.fontName ?? "" };
+        if (!cur.text.trim() && it.str.trim()) cur.font = it.fontName ?? cur.font;
         cur.text += it.str;
         cur.size = Math.max(cur.size, it.str.trim() ? size : 0);
         if (it.hasEOL) {
@@ -88,7 +97,10 @@ export async function parsePdf(data: Uint8Array, maxPages = 60): Promise<ParsedP
         if (prev) {
           const gap = prev.y - l.y; // pdf y grows upwards
           const sameSize = Math.abs(prev.size - l.size) <= 0.6;
-          if (!sameSize || gap <= 0 || gap > prev.size * 1.8 || Math.abs(prev.x - l.x) > prev.size * 12) flush();
+          // a short line in another font (bold heading) or shaped like a heading starts its own block
+          const fontSwitch = prev.font !== l.font && (headingLike(prev.text) || headingLike(l.text));
+          if (!sameSize || fontSwitch || headingLike(l.text) || headingLike(prev.text) && block.length === 1 && prev.font !== l.font
+            || gap <= 0 || gap > prev.size * 1.8 || Math.abs(prev.x - l.x) > prev.size * 12) flush();
         }
         block.push(l);
       }

@@ -7,7 +7,7 @@ services:
     plan: free
     region: singapore
     buildCommand: npm ci --include=dev && npm run build && cd apps/api && node dist/ml/embedded/warm.js
-    startCommand: cd apps/api && NODE_ENV=production node dist/index.js
+    startCommand: cd apps/api && NODE_ENV=production node --max-old-space-size=256 dist/index.js
     healthCheckPath: /api/health
     envVars:
       - key: NODE_VERSION

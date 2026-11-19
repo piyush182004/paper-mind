@@ -273,6 +273,13 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub ON users (google_sub) WHERE google_sub IS NOT NULL;
 `,
   },
+  {
+    version: 4,
+    name: "job attempts (crash-loop guard)",
+    sql: /* sql */ `
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0;
+`,
+  },
 ];
 
 export async function migrate(db: Db): Promise<number[]> {

@@ -46,6 +46,16 @@ export class JobQueue {
   }
 
   async start(): Promise<void> {
+    // a job that was running when the server died 3 times is what killed it: stop it instead of crash-looping
+    const { rows: stuck } = await this.db.query<{ id: number; kind: string; payload: Record<string, unknown> }>(
+      `UPDATE jobs SET status = 'failed', error = 'Stopped: this job interrupted the server several times (too large for this server?)',
+         updated_at = now() WHERE status = 'running' AND attempts >= 3 RETURNING id, kind, payload`);
+    for (const j of stuck) {
+      this.log.warn({ jobId: j.id, kind: j.kind }, "job stopped after repeated crashes");
+      if (j.kind === "ingest" && j.payload?.paperId)
+        await this.db.query("UPDATE papers SET status = 'failed', status_detail = 'Could not be processed on this server (too large?)' WHERE id = $1",
+          [Number(j.payload.paperId)]).catch(() => undefined);
+    }
     await this.db.query("UPDATE jobs SET status = 'queued', message = 'resumed after restart' WHERE status = 'running'");
     this.timer = setInterval(() => this.kick(), 1500);
     this.kick();
@@ -72,7 +82,7 @@ export class JobQueue {
   private async runNext(): Promise<boolean> {
     // claim the oldest queued job atomically
     const { rows } = await this.db.query<JobRow>(
-      `UPDATE jobs SET status = 'running', updated_at = now()
+      `UPDATE jobs SET status = 'running', attempts = attempts + 1, updated_at = now()
        WHERE id = (SELECT id FROM jobs q WHERE q.status = 'queued'
                     -- one topics/map rebuild per account at a time, so the newest library state always wins
                     AND NOT (q.kind IN ('cluster','graph') AND EXISTS (SELECT 1 FROM jobs r WHERE r.status = 'running'

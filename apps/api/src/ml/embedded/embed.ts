@@ -8,7 +8,7 @@ import { config } from "../../config.js";
 
 const MODEL = "Xenova/bge-small-en-v1.5";
 const QUERY_PREFIX = "Represent this sentence for searching relevant passages: ";
-const BATCH = 16; // bounds peak memory on small instances
+const BATCH = 4; // small batches keep peak memory low on 512 MB instances
 
 type Extractor = (texts: string[], opts: { pooling: "cls"; normalize: boolean }) => Promise<{ tolist(): number[][] }>;
 let loading: Promise<Extractor> | null = null;
@@ -17,7 +17,13 @@ export function loadEmbedder(): Promise<Extractor> {
   loading ??= (async () => {
     const t = await import("@huggingface/transformers");
     t.env.cacheDir = path.resolve(config.MODELS_DIR);
-    const pipe = await t.pipeline("feature-extraction", MODEL, { dtype: "q8" });
+    t.env.localModelPath = path.resolve(config.MODELS_DIR); // pre-placed model files are used without any download
+    const pipe = await t.pipeline("feature-extraction", MODEL, {
+      dtype: "q8",
+      // no memory arena/pattern caching and one thread: ONNX Runtime otherwise keeps the peak
+      // allocation of every batch, which grows past a 512 MB free instance
+      session_options: { enableCpuMemArena: false, enableMemPattern: false, intraOpNumThreads: 1, interOpNumThreads: 1, executionMode: "sequential" },
+    } as Parameters<typeof t.pipeline>[2]);
     return pipe as unknown as Extractor;
   })().catch((e) => {
     loading = null; // allow a retry (e.g. the model download failed)
