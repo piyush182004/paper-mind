@@ -72,8 +72,9 @@ export const libraryRoutes: FastifyPluginAsync = async (app) => {
       const busy = paper && (paper.status === "processing" || (paper.status === "queued" && !created));
       let jobId: number | null = null;
       if (!indexed && !busy) {
+        // status first: a fast job could otherwise finish before this and be marked "queued" again
+        await db.query("UPDATE papers SET status = 'queued', status_detail = 'Waiting to be processed', updated_at = now() WHERE id = $1 AND status <> 'processing'", [id]);
         jobId = await jobs.enqueue("ingest", { paperId: id, fulltext: body.fulltext, userId: uid }, uid);
-        await db.query("UPDATE papers SET status = 'queued' WHERE id = $1 AND status <> 'processing'", [id]);
         queued++;
       }
       out.push({ paperId: id, created, jobId, reused: Boolean(indexed) });
@@ -170,7 +171,13 @@ export const libraryRoutes: FastifyPluginAsync = async (app) => {
     const uid = userId(req);
     const { id } = Id.parse(req.params);
     if (!(await inLibrary(uid, id))) return reply.status(404).send({ error: "Paper not found" });
-    return { jobId: await jobs.enqueue("ingest", { paperId: id, userId: uid }, uid) };
+    // an uploaded paper is re-read from its stored file (if the server still has it)
+    const { rows } = await db.query<{ upload: string | null }>(
+      `SELECT payload->>'uploadPath' AS upload FROM jobs WHERE kind = 'ingest' AND payload->>'paperId' = $1::text
+         AND payload ? 'uploadPath' ORDER BY id DESC LIMIT 1`, [id]);
+    const uploadPath = rows[0]?.upload ?? undefined;
+    await db.query("UPDATE papers SET status = 'queued', status_detail = 'Waiting to be processed', updated_at = now() WHERE id = $1 AND status <> 'processing'", [id]);
+    return { jobId: await jobs.enqueue("ingest", { paperId: id, userId: uid, ...(uploadPath ? { uploadPath } : {}) }, uid) };
   });
 
   app.get("/jobs", async (req) => ({ jobs: await jobs.list(userId(req), 60) }));

@@ -22,6 +22,10 @@ export default function Library() {
   };
   const qc = useQueryClient();
   const openPaper = useOpenPaper();
+  const retry = useMutation({
+    mutationFn: (id: number) => api.post(`/papers/${id}/reingest`),
+    onSuccess: () => qc.invalidateQueries(),
+  });
 
   const papers = useQuery({
     queryKey: ["papers", q, status, sort],
@@ -95,7 +99,16 @@ export default function Library() {
                     <td className="px-3 tabular-nums text-ink-300">{p.year ?? "—"}</td>
                     <td className="px-3 tabular-nums text-ink-300">{p.citation_count.toLocaleString()}</td>
                     <td className="px-3 tabular-nums text-ink-300">{p.chunks}</td>
-                    <td className="px-3" title={p.status_detail ?? ""}><StatusBadge status={p.status} /></td>
+                    <td className="px-3 py-2" title={p.status_detail ?? ""}>
+                      <StatusBadge status={p.status} />
+                      {(p.status === "processing" || p.status === "failed") && p.status_detail && (
+                        <div className="mt-1 max-w-[13rem] truncate text-[11px] text-ink-400">{p.status_detail}</div>
+                      )}
+                      {p.status === "failed" && (
+                        <button onClick={(e) => { e.stopPropagation(); retry.mutate(p.id); }} disabled={retry.isPending}
+                          className="mt-1 text-[11px] font-medium text-brand-400 hover:underline disabled:opacity-50">Retry</button>
+                      )}
+                    </td>
                     <td className="px-3 text-ink-400">{p.source}</td>
                     <td className="pr-5 text-right" onClick={(e) => e.stopPropagation()}>
                       <button onClick={() => askRemove([p.id])} title="Remove from library" aria-label={`Remove ${p.title}`}

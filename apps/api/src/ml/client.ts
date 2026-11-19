@@ -14,6 +14,17 @@ export class MlUnavailableError extends Error {
   }
 }
 
+/** The in-process model ran out of memory on this document even on a fresh process. */
+export class MlMemoryError extends Error {
+  readonly status = 503;
+  readonly oom = true;
+  constructor(message = "This document needs more memory than this server has.") {
+    super(message);
+  }
+}
+
+const EMBED_SLICE = 12;
+
 export interface PdfBlock {
   page: number;
   kind: "heading" | "text" | "table" | "figure" | "equation";
@@ -78,19 +89,29 @@ export const ml = {
     embedded ? Promise.resolve({ status: "ok", embed_model: "bge-small-en-v1.5 (in-process)" })
       : call<{ status: string; embed_model: string }>("/health", { timeoutMs: 3000 }),
 
-  async embed(texts: string[], isQuery = false): Promise<number[][]> {
+  /** onProgress(done, total) is called after each slice, so long documents can report how far they got */
+  async embed(texts: string[], isQuery = false, onProgress?: (done: number, total: number) => unknown): Promise<number[][]> {
+    const out: number[][] = [];
     if (embedded) {
       const run = await worker();
-      try {
-        return await run<number[][]>("embed", [texts, isQuery]);
-      } catch (e) {
-        throw new MlUnavailableError(`Embedding model failed to load: ${(e as Error).message}`);
+      // small slices: a memory-guard restart costs one slice (retried once on a fresh process), not the document
+      for (let i = 0; i < texts.length; i += EMBED_SLICE) {
+        const slice = texts.slice(i, i + EMBED_SLICE);
+        try {
+          out.push(...(await run<number[][]>("embed", [slice, isQuery]).catch((e) =>
+            (e as { oom?: boolean }).oom ? run<number[][]>("embed", [slice, isQuery]) : Promise.reject(e))));
+        } catch (e) {
+          if ((e as { oom?: boolean }).oom) throw new MlMemoryError();
+          throw new MlUnavailableError(`Embedding failed: ${(e as Error).message}`);
+        }
+        await onProgress?.(out.length, texts.length);
       }
+      return out;
     }
-    const out: number[][] = [];
     for (let i = 0; i < texts.length; i += 64) {
       const r = await call<{ embeddings: number[][] }>("/embed", json({ texts: texts.slice(i, i + 64), is_query: isQuery }));
       out.push(...r.embeddings);
+      await onProgress?.(out.length, texts.length);
     }
     return out;
   },

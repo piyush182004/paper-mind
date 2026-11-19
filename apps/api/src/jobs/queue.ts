@@ -24,10 +24,22 @@ export interface JobContext {
 }
 type Handler = (payload: Record<string, unknown>, ctx: JobContext) => Promise<unknown>;
 
+/** a job still running after this is stopped, so one stuck download or document can't block the queue */
+const JOB_TIMEOUT_MS = Number(process.env.JOB_TIMEOUT_MS ?? 30 * 60_000);
+
+/** What the library shows for a paper whose processing failed. */
+function paperFailure(msg: string): string {
+  const m = msg.replace(/\s+/g, " ").trim().replace(/\.$/, "");
+  return (/again/i.test(m) ? `${m}.` : `Could not be processed: ${m}. Open the paper and use Re-ingest to try again.`).slice(0, 400);
+}
+
 export class JobQueue {
   private handlers = new Map<string, Handler>();
   private running = 0;
+  private active = 0; // jobs being worked on right now
   private timer: NodeJS.Timeout | null = null;
+  private sweeper: NodeJS.Timeout | null = null;
+  private awake: NodeJS.Timeout | null = null;
   private stopped = false;
 
   constructor(private db: Db, private log: FastifyBaseLogger, private concurrency = 2) {}
@@ -57,13 +69,55 @@ export class JobQueue {
           [Number(j.payload.paperId)]).catch(() => undefined);
     }
     await this.db.query("UPDATE jobs SET status = 'queued', message = 'resumed after restart' WHERE status = 'running'");
+    await this.repairStuckPapers().catch((e) => this.log.warn({ err: e }, "stuck-paper check failed"));
     this.timer = setInterval(() => this.kick(), 1500);
+    this.sweeper = setInterval(() => void this.repairStuckPapers().catch(() => undefined), 2 * 60_000);
+    this.sweeper.unref();
+    // free hosts (Render) sleep after ~15 min without visitors, which would pause imports mid-way:
+    // while there is work, visit our own public URL so the queue finishes even if everyone left
+    const self = process.env.RENDER_EXTERNAL_URL;
+    if (self) {
+      this.awake = setInterval(() => {
+        if (this.active > 0) void fetch(`${self}/api/health`, { signal: AbortSignal.timeout(20_000) }).catch(() => undefined);
+      }, 4 * 60_000);
+      this.awake.unref();
+    }
     this.kick();
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
-    if (this.timer) clearInterval(this.timer);
+    for (const t of [this.timer, this.sweeper, this.awake]) if (t) clearInterval(t);
+  }
+
+  /**
+   * Papers left "queued"/"processing" with no job that will finish them (lost to a restart, or
+   * failed before failures were recorded on the paper) are queued again with their last job's
+   * settings; after a few tries in an hour, or with no earlier job, they are marked failed instead.
+   */
+  async repairStuckPapers(): Promise<void> {
+    const { rows } = await this.db.query<{ id: number; payload: Record<string, unknown> | null; recent: number }>(
+      `SELECT p.id,
+         (SELECT j.payload FROM jobs j WHERE j.kind = 'ingest' AND j.payload->>'paperId' = p.id::text ORDER BY j.id DESC LIMIT 1) AS payload,
+         (SELECT count(*)::int FROM jobs j WHERE j.kind = 'ingest' AND j.payload->>'paperId' = p.id::text
+            AND j.created_at > now() - interval '1 hour') AS recent
+       FROM papers p
+       WHERE p.status IN ('queued', 'processing') AND p.updated_at < now() - interval '2 minutes'
+         AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind = 'ingest' AND j.status IN ('queued', 'running')
+                           AND j.payload->>'paperId' = p.id::text)
+       ORDER BY p.id LIMIT 20`);
+    for (const r of rows) {
+      const id = Number(r.id);
+      if (r.payload && Number(r.recent) < 3) {
+        await this.db.query("UPDATE papers SET status = 'queued', status_detail = 'Waiting to be processed', updated_at = now() WHERE id = $1", [id]);
+        await this.enqueue("ingest", r.payload, r.payload.userId ? Number(r.payload.userId) : undefined);
+        this.log.info({ paperId: id }, "re-queued a stuck paper");
+      } else {
+        await this.db.query("UPDATE papers SET status = 'failed', status_detail = $2, updated_at = now() WHERE id = $1",
+          [id, paperFailure("processing was interrupted")]);
+        this.log.warn({ paperId: id }, "marked a stuck paper as failed");
+      }
+    }
   }
 
   /** Start workers up to the concurrency limit; each one claims a job, and re-kicks if it found work. */
@@ -102,16 +156,36 @@ export class JobQueue {
     };
     const started = Date.now();
     this.log.info({ jobId: id, kind: job.kind }, "job started");
+    this.active++;
+    let timeout: NodeJS.Timeout | undefined;
     try {
       if (!handler) throw new Error(`no handler for job kind "${job.kind}"`);
-      const result = await handler(job.payload, ctx);
+      const result = await Promise.race([
+        handler(job.payload, ctx),
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error(`it took longer than ${Math.round(JOB_TIMEOUT_MS / 60_000)} minutes`)), JOB_TIMEOUT_MS);
+        }),
+      ]);
       this.log.info({ jobId: id, kind: job.kind, ms: Date.now() - started }, "job done");
       await this.db.query("UPDATE jobs SET status = 'done', progress = 1, result = $2::jsonb, updated_at = now() WHERE id = $1",
         [id, JSON.stringify(result ?? null)]);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.log.warn({ jobId: id, kind: job.kind, err: msg }, "job failed");
+      // the paper must leave "processing" too, or the library shows it as busy forever
+      const paperId = job.kind === "ingest" ? Number(job.payload?.paperId) : NaN;
+      if (paperId) {
+        await this.db.query(
+          `UPDATE papers SET status = 'failed', status_detail = $2, updated_at = now()
+           WHERE id = $1 AND status IN ('queued', 'processing')
+             AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id <> $3 AND j.kind = 'ingest' AND j.status IN ('queued', 'running')
+                               AND j.payload->>'paperId' = $1::text)`,
+          [paperId, paperFailure(msg), id]).catch((err) => this.log.warn({ err, paperId }, "could not mark paper failed"));
+      }
       await this.db.query("UPDATE jobs SET status = 'failed', error = $2, updated_at = now() WHERE id = $1", [id, msg.slice(0, 1000)]);
+    } finally {
+      clearTimeout(timeout);
+      this.active--;
     }
     return true;
   }

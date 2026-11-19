@@ -9,7 +9,7 @@ import path from "node:path";
 import { config } from "../config.js";
 import { type Db, vec } from "../db/client.js";
 import { fetchWithRetry } from "../lib/http.js";
-import { ml, type ParsedPdf } from "../ml/client.js";
+import { ml, MlMemoryError, type ParsedPdf } from "../ml/client.js";
 import { addConcepts, getPaper, linkCitations, replaceContent, replaceExtraction, setAuthors, setStatus } from "../repo/papers.js";
 import { arxivThrottled } from "../sources/arxiv.js";
 import { getOpenAlexWork } from "../sources/openalex.js";
@@ -62,8 +62,13 @@ export interface IngestPayload {
 
 export async function ingestPaper(db: Db, payload: IngestPayload, ctx: JobContext): Promise<Record<string, unknown>> {
   const { paperId } = payload;
-  await setStatus(db, paperId, "processing", "enriching metadata");
-  await ctx.progress(0.05, "Enriching metadata (OpenAlex)");
+  // progress goes to the job and to the paper, so the library shows what is happening
+  const step = async (fraction: number, message: string) => {
+    await ctx.progress(fraction, message);
+    await db.query("UPDATE papers SET status_detail = $2 WHERE id = $1 AND status = 'processing'", [paperId, message]);
+  };
+  await setStatus(db, paperId, "processing", "Starting");
+  await step(0.05, "Enriching metadata (OpenAlex)");
   await enrich(db, paperId).catch(() => undefined);
 
   const paper = await getPaper(db, paperId);
@@ -74,13 +79,18 @@ export async function ingestPaper(db: Db, payload: IngestPayload, ctx: JobContex
   let note: string | null = null;
   try {
     let bytes: Uint8Array | null = null;
-    if (payload.uploadPath) bytes = new Uint8Array(await fs.readFile(payload.uploadPath));
-    else if (payload.fulltext !== false && paper.pdf_url) {
-      await ctx.progress(0.15, "Downloading PDF");
+    if (payload.uploadPath) {
+      bytes = await fs.readFile(payload.uploadPath).then((b) => new Uint8Array(b), (e: NodeJS.ErrnoException) => {
+        if (e.code !== "ENOENT") throw e;
+        // free hosts wipe their disk on restart: the file is gone, so say what to do instead of failing obscurely
+        throw Object.assign(new Error("The uploaded file is no longer on the server (it restarted). Please upload the PDF again."), { fatal: true });
+      });
+    } else if (payload.fulltext !== false && paper.pdf_url) {
+      await step(0.15, "Downloading PDF");
       bytes = await downloadPdf(paper.pdf_url);
     }
     if (bytes) {
-      await ctx.progress(0.3, "Parsing PDF (text, sections, tables, equations)");
+      await step(0.3, "Reading the PDF (text, sections, tables, equations)");
       parsed = await ml.parsePdf(bytes);
       if (!parsed.blocks.some((b) => b.kind === "text")) {
         parsed = null;
@@ -88,7 +98,7 @@ export async function ingestPaper(db: Db, payload: IngestPayload, ctx: JobContex
       }
     } else note = payload.fulltext === false ? "Imported as abstract-only" : "No open-access PDF; indexed title and abstract only";
   } catch (e) {
-    if ((e as { status?: number }).status === 503) throw e; // ML service down: let the job fail and be retried
+    if ((e as { status?: number }).status === 503 || (e as { fatal?: boolean }).fatal) throw e; // ML service down / file gone
     note = `Full text unavailable (${(e as Error).message}); indexed abstract only`;
   }
 
@@ -98,20 +108,42 @@ export async function ingestPaper(db: Db, payload: IngestPayload, ctx: JobContex
     paper.title = parsed.title;
   }
 
-  const chunks = parsed ? chunkPaper(paper.title, paper.abstract, parsed.blocks) : abstractOnly(paper.title, paper.abstract);
-  if (!chunks.length) throw new Error("nothing to index (no abstract and no full text)");
+  let chunks = parsed ? chunkPaper(paper.title, paper.abstract, parsed.blocks) : abstractOnly(paper.title, paper.abstract);
+  if (!chunks.length) throw new Error("Nothing to index: no abstract and no readable full text");
 
   // ---- embeddings (title + section give each chunk context without changing what is shown)
-  await ctx.progress(0.5, `Embedding ${chunks.length} chunks`);
-  const chunkVecs = await ml.embed(chunks.map((c) => `${paper.title}. ${c.section ?? ""}: ${c.content}`));
+  const embedChunks = (cs: ChunkDraft[]) => {
+    const total = cs.length;
+    return ml.embed(cs.map((c) => `${paper.title}. ${c.section ?? ""}: ${c.content}`), false,
+      (done) => step(0.4 + 0.35 * (done / total), `Indexing text: ${done} of ${total} passages`));
+  };
+  await step(0.4, `Indexing text: 0 of ${chunks.length} passages`);
+  let chunkVecs: number[][];
+  try {
+    chunkVecs = await embedChunks(chunks);
+  } catch (e) {
+    if (!(e instanceof MlMemoryError) || !parsed) throw e;
+    // the full text doesn't fit this server's memory: keep the paper usable from its title + abstract
+    parsed = null;
+    note = "Full text is too large for this server, so it was indexed from its title and abstract";
+    chunks = abstractOnly(paper.title, paper.abstract);
+    if (!chunks.length) throw new Error("This PDF is too large for this server and the paper has no abstract to index instead");
+    chunkVecs = await embedChunks(chunks);
+  }
   const [paperVec] = await ml.embed([`${paper.title}. ${paper.abstract ?? ""}`]);
 
-  await ctx.progress(0.7, "Extracting entities and claims");
+  await step(0.78, "Extracting entities and claims");
   const entities = extractEntities(chunks);
-  const claims = extractClaims(chunks);
-  const claimVecs = claims.length ? await ml.embed(claims.map((c) => c.text)) : [];
+  let claims = extractClaims(chunks);
+  const claimVecs = claims.length
+    ? await ml.embed(claims.map((c) => c.text)).catch((e) => {
+      if (!(e instanceof MlMemoryError)) throw e;
+      claims = []; // optional extras: keep the indexed text rather than fail the paper
+      return [];
+    })
+    : [];
 
-  await ctx.progress(0.85, "Writing to the database");
+  await step(0.9, "Saving");
   const stats = await replaceContent(db, paperId, {
     chunks: chunks.map((c, i) => ({ ...c, embedding: chunkVecs[i] })),
     entities,
