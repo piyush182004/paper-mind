@@ -37,6 +37,7 @@ export class JobQueue {
   private handlers = new Map<string, Handler>();
   private running = 0;
   private active = 0; // jobs being worked on right now
+  private mine = new Set<number>(); // their ids
   private timer: NodeJS.Timeout | null = null;
   private sweeper: NodeJS.Timeout | null = null;
   private awake: NodeJS.Timeout | null = null;
@@ -88,6 +89,12 @@ export class JobQueue {
   async stop(): Promise<void> {
     this.stopped = true;
     for (const t of [this.timer, this.sweeper, this.awake]) if (t) clearInterval(t);
+    // shutting down (e.g. a deploy replacing this instance): hand unfinished jobs to the next one now
+    if (this.mine.size) {
+      await this.db.query(
+        "UPDATE jobs SET status = 'queued', attempts = GREATEST(attempts - 1, 0), message = 'resumed after restart', updated_at = now() WHERE id = ANY($1::bigint[]) AND status = 'running'",
+        [[...this.mine]]).catch(() => undefined);
+    }
   }
 
   /**
@@ -96,6 +103,17 @@ export class JobQueue {
    * settings; after a few tries in an hour, or with no earlier job, they are marked failed instead.
    */
   async repairStuckPapers(): Promise<void> {
+    // jobs left "running" by an instance that died without handing them back (crash, or an old
+    // instance that took a job just before a deploy stopped it): no progress for 10 minutes
+    const { rows: dead } = await this.db.query<{ id: number }>(
+      `UPDATE jobs SET status = 'queued', message = 'resumed after restart', updated_at = now()
+       WHERE status = 'running' AND updated_at < now() - interval '10 minutes' AND attempts < 3
+         AND NOT (id = ANY($1::bigint[])) RETURNING id`, [[...this.mine]]);
+    if (dead.length) this.log.warn({ jobs: dead.map((r) => Number(r.id)) }, "re-queued jobs abandoned by a stopped instance");
+    await this.db.query(
+      `UPDATE jobs SET status = 'failed', error = 'Stopped: it was interrupted several times', updated_at = now()
+       WHERE status = 'running' AND updated_at < now() - interval '10 minutes' AND attempts >= 3 AND NOT (id = ANY($1::bigint[]))`,
+      [[...this.mine]]);
     const { rows } = await this.db.query<{ id: number; payload: Record<string, unknown> | null; recent: number }>(
       `SELECT p.id,
          (SELECT j.payload FROM jobs j WHERE j.kind = 'ingest' AND j.payload->>'paperId' = p.id::text ORDER BY j.id DESC LIMIT 1) AS payload,
@@ -157,6 +175,7 @@ export class JobQueue {
     const started = Date.now();
     this.log.info({ jobId: id, kind: job.kind }, "job started");
     this.active++;
+    this.mine.add(id);
     let timeout: NodeJS.Timeout | undefined;
     try {
       if (!handler) throw new Error(`no handler for job kind "${job.kind}"`);
@@ -186,6 +205,7 @@ export class JobQueue {
     } finally {
       clearTimeout(timeout);
       this.active--;
+      this.mine.delete(id);
     }
     return true;
   }

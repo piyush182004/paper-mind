@@ -98,8 +98,11 @@ export const ml = {
       for (let i = 0; i < texts.length; i += EMBED_SLICE) {
         const slice = texts.slice(i, i + EMBED_SLICE);
         try {
-          out.push(...(await run<number[][]>("embed", [slice, isQuery]).catch((e) =>
-            (e as { oom?: boolean }).oom ? run<number[][]>("embed", [slice, isQuery]) : Promise.reject(e))));
+          out.push(...(await run<number[][]>("embed", [slice, isQuery]).catch(async (e) => {
+            if (!(e as { oom?: boolean }).oom) throw e;
+            await new Promise((r) => setTimeout(r, 1500)); // let the stopped process's memory return first
+            return run<number[][]>("embed", [slice, isQuery]);
+          })));
         } catch (e) {
           if ((e as { oom?: boolean }).oom) throw new MlMemoryError();
           throw new MlUnavailableError(`Embedding failed: ${(e as Error).message}`);

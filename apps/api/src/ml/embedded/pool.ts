@@ -15,10 +15,12 @@ export class WorkerMemoryError extends Error {
   readonly oom = true;
 }
 
+type Msg = { id: number; op: string; args: unknown[] };
 type Pending = {
   resolve: (v: unknown) => void;
   reject: (e: Error) => void;
-  msg: { id: number; op: string; args: unknown[] };
+  msg: Msg;
+  owner: ChildProcess; // the process working on it
   timer: NodeJS.Timeout;
   retried?: boolean;
 };
@@ -33,6 +35,14 @@ function settle(id: number): Pending | undefined {
     pending.delete(id);
   }
   return p;
+}
+
+const ownedBy = (c: ChildProcess) => [...pending.entries()].filter(([, p]) => p.owner === c);
+
+/** the current process, or a fresh one if it has exited or is being retired */
+function current(): ChildProcess {
+  if (!child || child.exitCode !== null || !child.connected) child = spawn();
+  return child;
 }
 
 function spawn(): ChildProcess {
@@ -50,23 +60,30 @@ function spawn(): ChildProcess {
     if (!p) return;
     if (error !== undefined) p.reject(new Error(error));
     else p.resolve(result);
+    // a parsed PDF leaves pdf.js memory behind: retire this process so the embedding that
+    // follows starts on a clean one (only when nothing else is waiting on it)
+    if (p.msg.op === "parsePdf" && !ownedBy(c).length) {
+      if (child === c) child = null;
+      c.kill();
+    }
   });
   c.on("exit", (code) => {
     if (child === c) child = null;
+    const mine = ownedBy(c);
+    if (!mine.length) return;
     // exited while idle just as a request arrived: resend those once to a fresh worker
     if (code === 0) {
-      const again = [...pending.values()].filter((p) => !p.retried);
-      for (const p of again) {
+      for (const [, p] of mine) {
+        if (p.retried) continue;
         p.retried = true;
-        child ??= spawn();
-        child.send(p.msg);
+        p.owner = current();
+        p.owner.send(p.msg);
       }
-      if (again.length === pending.size) return;
     }
     const err = code === OOM_EXIT_CODE
       ? new WorkerMemoryError("This document needs more memory than this server has.")
       : new Error(`ML worker stopped unexpectedly (code ${code})`);
-    for (const id of [...pending.keys()]) settle(id)?.reject(err);
+    for (const [id, p] of mine) if (p.owner === c) settle(id)?.reject(err);
   });
   c.on("error", () => undefined); // reported through "exit"
   c.unref();
@@ -75,18 +92,20 @@ function spawn(): ChildProcess {
 }
 
 export function runInWorker<T>(op: "embed" | "parsePdf" | "cluster", args: unknown[], _transfer: ArrayBuffer[] = []): Promise<T> {
-  if (!child || child.exitCode !== null || !child.connected) child = spawn();
+  const c = current();
   const id = nextId++;
-  const c = child;
   return new Promise<T>((resolve, reject) => {
     const msg = { id, op, args };
-    // a hung call is killed with its process (pending calls get "stopped unexpectedly"), never waited on forever
+    // a hung call is stopped with its process (other calls on it are re-sent or fail), never awaited forever
     const timer = setTimeout(() => {
-      settle(id)?.reject(new Error(`ML ${op} took longer than ${Math.round(CALL_TIMEOUT_MS / 60_000)} minutes and was stopped`));
-      c.kill();
+      const p = settle(id);
+      if (!p) return;
+      p.reject(new Error(`ML ${op} took longer than ${Math.round(CALL_TIMEOUT_MS / 60_000)} minutes and was stopped`));
+      if (child === p.owner) child = null;
+      p.owner.kill();
     }, CALL_TIMEOUT_MS);
     timer.unref();
-    pending.set(id, { resolve: resolve as (v: unknown) => void, reject, msg, timer });
+    pending.set(id, { resolve: resolve as (v: unknown) => void, reject, msg, owner: c, timer });
     c.send(msg, (err) => {
       if (err) settle(id)?.reject(new Error(`ML worker unavailable: ${err.message}`));
     });

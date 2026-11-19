@@ -17,18 +17,44 @@ export const OOM_EXIT_CODE = 70;
 
 type Msg = { id: number; op: "embed" | "parsePdf" | "cluster"; args: unknown[] };
 
-/** Container memory in use (minus reclaimable file cache, like the host counts it) and its limit, in MB. */
+// Only memory the kernel can't drop counts. Cached files (node_modules, the model file, shared
+// libraries) also show up in RSS and in the cgroup's usage, but the kernel frees those itself
+// under pressure, so counting them made the guard trip hundreds of MB too early.
+const linux = process.platform === "linux";
+/** the number after `key` on its own line ("RssAnon:  1234 kB" in /proc, "file 5678" bytes in cgroup files) */
+const field = (text: string, key: string) => Number(new RegExp(`^${key}:?\\s+(\\d+)`, "m").exec(text)?.[1] ?? NaN);
+
+/** this process: anonymous + shared memory (MB); RSS elsewhere */
+function processMb(): number {
+  if (linux) {
+    try {
+      const st = fs.readFileSync("/proc/self/status", "utf8");
+      const v = (field(st, "RssAnon") + (field(st, "RssShmem") || 0)) / 1024;
+      if (Number.isFinite(v)) return v;
+    } catch {
+      /* fall through */
+    }
+  }
+  return process.memoryUsage().rss / 1e6;
+}
+
+/** the whole instance (container cgroup) minus its file cache, and the limit, in MB */
 function readCgroup(): { usedMb: number; limitMb: number } | null {
   const read = (f: string) => fs.readFileSync(f, "utf8").trim();
-  const num = (s: string) => (/^\d+$/.test(s) ? Number(s) / 1e6 : NaN);
+  const bytes = (s: string) => (/^\d+$/.test(s) ? Number(s) / 1e6 : NaN);
   const hostLimit = Number(process.env.ML_HOST_MEMORY_MB ?? (process.env.RENDER ? 512 : NaN));
-  for (const [cur, max, stat, inactive] of [
-    ["/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.stat", "inactive_file"], // cgroup v2
-    ["/sys/fs/cgroup/memory/memory.usage_in_bytes", "/sys/fs/cgroup/memory/memory.limit_in_bytes", "/sys/fs/cgroup/memory/memory.stat", "total_inactive_file"], // v1
-  ]) {
+  const v2 = () => {
+    const stat = read("/sys/fs/cgroup/memory.stat");
+    return { used: bytes(read("/sys/fs/cgroup/memory.current")) - (field(stat, "file") - (field(stat, "shmem") || 0)) / 1e6, max: read("/sys/fs/cgroup/memory.max") };
+  };
+  const v1 = () => {
+    const stat = read("/sys/fs/cgroup/memory/memory.stat");
+    return { used: (field(stat, "total_rss") + (field(stat, "total_shmem") || 0)) / 1e6, max: read("/sys/fs/cgroup/memory/memory.limit_in_bytes") };
+  };
+  for (const get of [v2, v1]) {
     try {
-      const used = num(read(cur)) - Number(new RegExp(`^${inactive} (\\d+)$`, "m").exec(read(stat))?.[1] ?? 0) / 1e6;
-      let limit = num(read(max));
+      const { used, max } = get();
+      let limit = bytes(max);
       if (!(limit > 0 && limit < 64_000)) limit = hostLimit; // "max" / huge = not limited here
       if (Number.isFinite(used) && limit > 0) return { usedMb: used, limitMb: Math.min(limit, hostLimit || limit) };
     } catch {
@@ -40,17 +66,17 @@ function readCgroup(): { usedMb: number; limitMb: number } | null {
 
 // at start-up the instance is only the web server + this fresh process: a reading above 60 % of the
 // limit means the cgroup isn't this instance's own, so fall back to the per-process cap
-const cgroup = ((c) => (c && c.usedMb < c.limitMb * 0.6 ? c : null))(process.platform === "linux" ? readCgroup() : null);
+const cgroup = ((c) => (c && c.usedMb < c.limitMb * 0.6 ? c : null))(linux ? readCgroup() : null);
+const processCap = cgroup ? cgroup.limitMb * 0.8 : MAX_RSS_MB;
 console.error(cgroup
-  ? `[ml-worker] memory guard: instance limit ${Math.round(cgroup.limitMb)} MB (now ${Math.round(cgroup.usedMb)} MB in use)`
+  ? `[ml-worker] memory guard: instance limit ${Math.round(cgroup.limitMb)} MB (${Math.round(cgroup.usedMb)} MB in use at start)`
   : `[ml-worker] memory guard: ${MAX_RSS_MB} MB for this process`);
 
 setInterval(() => {
-  const rss = process.memoryUsage().rss / 1e6;
+  const mine = processMb();
   const c = cgroup && readCgroup();
-  const over = c ? c.usedMb > c.limitMb - HEADROOM_MB || rss > c.limitMb * 0.85 : rss > MAX_RSS_MB;
-  if (over) {
-    console.error(`[ml-worker] memory guard tripped (process ${Math.round(rss)} MB${c ? `, instance ${Math.round(c.usedMb)}/${Math.round(c.limitMb)} MB` : ""}): restarting`);
+  if ((c && c.usedMb > c.limitMb - HEADROOM_MB) || mine > processCap) {
+    console.error(`[ml-worker] memory guard tripped (process ${Math.round(mine)} MB${c ? `, instance ${Math.round(c.usedMb)}/${Math.round(c.limitMb)} MB` : ""}): restarting`);
     process.exit(OOM_EXIT_CODE);
   }
 }, 200);
