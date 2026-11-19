@@ -5,7 +5,7 @@
 import { config } from "../config.js";
 
 const embedded = config.ML_MODE === "embedded";
-const local = () => Promise.all([import("./embedded/embed.js"), import("./embedded/pdf.js"), import("./embedded/cluster.js")]);
+const worker = () => import("./embedded/pool.js").then((m) => m.runInWorker);
 
 export class MlUnavailableError extends Error {
   readonly status = 503;
@@ -80,9 +80,9 @@ export const ml = {
 
   async embed(texts: string[], isQuery = false): Promise<number[][]> {
     if (embedded) {
-      const [{ embed }] = await local();
+      const run = await worker();
       try {
-        return await embed(texts, isQuery);
+        return await run<number[][]>("embed", [texts, isQuery]);
       } catch (e) {
         throw new MlUnavailableError(`Embedding model failed to load: ${(e as Error).message}`);
       }
@@ -104,9 +104,10 @@ export const ml = {
 
   async parsePdf(pdf: Uint8Array): Promise<ParsedPdf> {
     if (embedded) {
-      const [, { parsePdf }] = await local();
+      const run = await worker();
       try {
-        return await parsePdf(pdf);
+        const copy = new Uint8Array(pdf); // own buffer, moved (not copied) to the worker
+        return await run<ParsedPdf>("parsePdf", [copy], [copy.buffer as ArrayBuffer]);
       } catch (e) {
         const err = new Error(`Could not read this PDF: ${(e as Error).message}`) as Error & { status: number };
         err.status = 422;
@@ -118,8 +119,8 @@ export const ml = {
 
   async cluster(embeddings: number[][], docs: string[], algorithm: "hdbscan" | "kmeans", opts: { minClusterSize?: number; k?: number } = {}): Promise<ClusterOut> {
     if (embedded) {
-      const [, , { cluster }] = await local();
-      return cluster(embeddings, docs, algorithm, { k: opts.k });
+      const run = await worker();
+      return run<ClusterOut>("cluster", [embeddings, docs, algorithm, { k: opts.k }]);
     }
     return call<ClusterOut>("/cluster", json({ embeddings, docs, algorithm, min_cluster_size: opts.minClusterSize, k: opts.k }));
   },

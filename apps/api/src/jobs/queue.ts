@@ -100,9 +100,12 @@ export class JobQueue {
           [id, Math.max(0, Math.min(1, fraction)), message ?? null]);
       },
     };
+    const started = Date.now();
+    this.log.info({ jobId: id, kind: job.kind }, "job started");
     try {
       if (!handler) throw new Error(`no handler for job kind "${job.kind}"`);
       const result = await handler(job.payload, ctx);
+      this.log.info({ jobId: id, kind: job.kind, ms: Date.now() - started }, "job done");
       await this.db.query("UPDATE jobs SET status = 'done', progress = 1, result = $2::jsonb, updated_at = now() WHERE id = $1",
         [id, JSON.stringify(result ?? null)]);
     } catch (e) {
